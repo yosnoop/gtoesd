@@ -1,0 +1,146 @@
+#!/usr/bin/python
+
+import xml.parsers.expat
+import socket
+import json
+import time
+import sys
+
+class gmeta_processor:
+    def __init__ (self, gmeta_hosts, elastic_hosts, interval=15, batch=10000):
+        self.gmeta_hosts = gmeta_hosts
+        self.elastic_hosts = elastic_hosts
+        self.interval = interval
+        self.batch = batch
+        self.cur_host = None
+        self.cur_grid = 'unspecified'
+        self.cur_cluster = 'unspecified'
+        self.time_reported = 0
+        self.readbytes = 8192
+        #
+        # The localtime function does not give proper tz info
+        #
+        self.tz = time.strftime('%z')
+        self.buffer = []
+        self.n_parsed_metrics = 0
+        self.n_parsed_hosts = 0
+
+    def s_el (self, name, attrs):
+        if name == 'GRID':
+            self.cur_grid = attrs['NAME']
+        if name == 'CLUSTER':
+            self.cur_cluster = attrs['NAME']
+        if name == 'HOST':
+            self.cur_host = attrs['NAME']
+            self.time_reported = int(attrs['REPORTED'])
+            self.n_parsed_hosts += 1
+        if name == 'METRIC' and self.cur_host:
+            self.n_parsed_metrics += 1
+            tn = int(attrs['TN'])
+            time_metric = self.time_reported - tn
+            if tn > 15:
+                return
+            # print 'm:%s h:%s at:%d tn:%d ma:%d hr:%d ha:%d s:%d' %( # ma:%d lr:%d ha:%d ct:%d s:%s' %(
+            #     attrs['NAME'],
+            #     self.cur_host,
+            #     time_metric,
+            #     tn,
+            #     self.check_time - time_metric,
+            #     self.time_reported,
+            #     self.check_time - self.time_reported,
+            #     wouldsend,
+            # )
+            time_metric = time.strftime("%Y-%m-%dT%H:%M:%S",time.localtime(time_metric))
+            time_metric += self.tz
+            val = attrs['VAL']
+            if attrs['TYPE'] == 'float' or attrs['TYPE'] == 'double':
+                val = float(val)
+            elif attrs['TYPE'] != 'string':
+                val = int(val)
+            units = attrs['UNITS']
+            if units.strip() == "":
+                units = "-"
+            out = {
+                'name': attrs['NAME'],
+                'val':  val,
+                'units': units,
+                '@timestamp': time_metric,
+                'host': self.cur_host,
+                'cluster': self.cur_cluster,
+                'grid': self.cur_grid,
+            }
+            self.buffer.append('{ "index": {} }')
+            self.buffer.append(json.dumps(out))
+
+    def e_el (self, name):
+        global host
+        if name == 'HOST':
+            self.cur_host = None
+
+    def elastic_index (self):
+        bulk = '\n'.join(self.buffer)
+        s = socket.socket()
+        addr,port = self.elastic_hosts[0].split(':')
+        s.connect((addr,int(port)))
+        hdr = 'POST /ganglia/gmon/_bulk HTTP/1.1\n' +\
+              'Content-Type: text/json\n' +\
+              'Content-Length: %d\n\n' %(len(bulk))
+        s.send(hdr+bulk)
+        r = s.recv(256)
+        print 'got back from elasticsearch:'
+        print r
+        if r.split('\n')[0].split(' ')[1] == '200':
+            print 'ok status'
+
+    def parse_metrics (self):
+        # create parser
+        p=xml.parsers.expat.ParserCreate()
+        p.StartElementHandler = self.s_el
+        p.EndElementHandler = self.e_el
+        # connect to ganglia
+        s = socket.socket()
+        addr,port = self.gmeta_hosts[0].split(':')
+        s.connect((addr,int(port)))
+        d = s.recv(self.readbytes)
+        # clear counters and defaults
+        self.buffer = []
+        self.n_parsed_metrics = 0
+        self.n_parsed_hosts = 0
+        self.cur_grid = 'unspecified'
+        self.cur_cluster = 'unspecified'
+        self.check_time = time.time()
+        while d != '':
+            try:
+                p.Parse(d)
+            except:
+                print 'got error (%d: %s) parsing XML at %d' %(
+                    p.ErrorCode,
+                    xml.parsers.expat.ErrorString(p.ErrorCode),
+                    p.ErrorByteIndex,
+                )
+                print 'error string -----',d[p.ErrorByteIndex],'-----'
+                print d[p.ErrorByteIndex-10:p.ErrorByteIndex+10]
+                sys.exit()
+                
+            if len(self.buffer) >= self.batch:
+                print 'going to send batch of size %d to es' %(len(self.buffer))
+                self.elastic_index()
+                self.buffer = []
+
+            d = s.recv(self.readbytes)
+
+        print 'going to send batch of size %d to es' %(len(self.buffer))
+        self.elastic_index()
+        self.buffer = []
+        
+
+    def run (self):
+        while True:
+            self.parse_metrics()
+            print 'parsed %d metrics from %d hosts' %(self.n_parsed_metrics,self.n_parsed_hosts)
+            print 'sleeping %d seconds' %self.interval
+            time.sleep(self.interval)
+
+if __name__ == '__main__':
+    g = gmeta_processor([sys.argv[1]],[sys.argv[2]])
+    g.run()
