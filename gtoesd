@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import argparse
 import xml.parsers.expat
 import socket
 import json
@@ -167,5 +168,40 @@ class gmeta_processor:
             time.sleep(self.interval)
 
 if __name__ == '__main__':
-    g = gmeta_processor([sys.argv[1]],[sys.argv[2]])
+    parser = argparse.ArgumentParser(
+        description='Index ganglia metrics to Elasticsearch')
+    parser.add_argument(
+        '-g','--ganglia',
+        type=str,help='gmetad host:port',
+        metavar='H:P',action='append',
+    )
+    parser.add_argument(
+        '-e','--elastic',
+        type=str,help='elastic host:port',
+        metavar='H:P',action='append',
+    )
+    parser.add_argument(
+        '-i','--interval',
+        type=int,help='poll in seconds',
+        metavar='I',default=15,
+    )
+    parser.add_argument(
+        '-n','--noindex',
+        help='Do not index, just show what would happen',
+        action='store_true',
+    )
+
+    p = parser.parse_args()
+
+    if not p.ganglia:
+        p.ganglia = ['localhost:8651']
+    if not p.elastic:
+        p.elastic = ['localhost:9200']
+
+    g = gmeta_processor(
+        p.ganglia,
+        p.elastic,
+        interval=p.interval,
+        debug=p.noindex
+    )
     g.run()
