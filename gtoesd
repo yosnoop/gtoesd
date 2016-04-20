@@ -7,7 +7,15 @@ import time
 import sys
 
 class gmeta_processor:
-    def __init__ (self, gmeta_hosts, elastic_hosts, interval=15, batch=10000):
+    #
+    # Processes XML stats from ganglia gmetad and injects them into
+    # elasticsearch via the bulk API. Designed to run as a deamon
+    # process collecting stats at a regular interval and pushing to
+    # ES.
+    #
+    def __init__ (self, gmeta_hosts, elastic_hosts,
+                  interval=15, batch=10000, debug=False):
+        self.debug = debug
         self.gmeta_hosts = gmeta_hosts
         self.elastic_hosts = elastic_hosts
         self.interval = interval
@@ -26,6 +34,12 @@ class gmeta_processor:
         self.n_parsed_hosts = 0
 
     def s_el (self, name, attrs):
+        #
+        # XML start element processor. For grid and cluster types
+        # store the name. For host type weget the reported type and
+        # store host name and number processed. Metric is where the
+        # real magic happens of created index entries
+        #
         if name == 'GRID':
             self.cur_grid = attrs['NAME']
         if name == 'CLUSTER':
@@ -38,18 +52,14 @@ class gmeta_processor:
             self.n_parsed_metrics += 1
             tn = int(attrs['TN'])
             time_metric = self.time_reported - tn
-            if tn > 15:
+            #
+            # Metrics reported less than interval time ago should be
+            # pushed to the system. Maybe we also need to check that
+            # host last updated time is within last interval
+            # (otherwise we may have already done this one)
+            #
+            if tn > self.interval:
                 return
-            # print 'm:%s h:%s at:%d tn:%d ma:%d hr:%d ha:%d s:%d' %( # ma:%d lr:%d ha:%d ct:%d s:%s' %(
-            #     attrs['NAME'],
-            #     self.cur_host,
-            #     time_metric,
-            #     tn,
-            #     self.check_time - time_metric,
-            #     self.time_reported,
-            #     self.check_time - self.time_reported,
-            #     wouldsend,
-            # )
             time_metric = time.strftime("%Y-%m-%dT%H:%M:%S",time.localtime(time_metric))
             time_metric += self.tz
             val = attrs['VAL']
@@ -60,6 +70,9 @@ class gmeta_processor:
             units = attrs['UNITS']
             if units.strip() == "":
                 units = "-"
+            #
+            # The index itself, which gets converted to json
+            #
             out = {
                 'name': attrs['NAME'],
                 'val':  val,
@@ -73,11 +86,19 @@ class gmeta_processor:
             self.buffer.append(json.dumps(out))
 
     def e_el (self, name):
+        #
+        # XML end element parser. All we need to do here is close out
+        # host entry so no processing any cruft
+        #
         global host
         if name == 'HOST':
             self.cur_host = None
 
     def elastic_index (self):
+        indexname = time.strftime('ganglia-%Y.%m.%d')
+        if self.debug:
+            print 'debug mode: would index %d to index %s' %(len(self.buffer)/2,indexname)
+            return
         bulk = '\n'.join(self.buffer)
         s = socket.socket()
         addr,port = self.elastic_hosts[0].split(':')
@@ -93,7 +114,11 @@ class gmeta_processor:
             print 'ok status'
 
     def parse_metrics (self):
-        # create parser
+        #
+        # Connect to Ganglia and get XML representation of
+        # cluster. Feed into the XML parser and occasionally trigger
+        # the elastic bulk indexing after batching (batch parameter)
+        #
         p=xml.parsers.expat.ParserCreate()
         p.StartElementHandler = self.s_el
         p.EndElementHandler = self.e_el
