@@ -123,11 +123,21 @@ class gmeta_processor:
         p=xml.parsers.expat.ParserCreate()
         p.StartElementHandler = self.s_el
         p.EndElementHandler = self.e_el
-        # connect to ganglia
-        s = socket.socket()
-        addr,port = self.gmeta_hosts[0].split(':')
-        s.connect((addr,int(port)))
-        d = s.recv(self.readbytes)
+        xmldata=''
+        #
+        # connect to ganglia. Try servers listed in turn for a server
+        # which we can connect to
+        #
+        for gmeta in self.gmeta_hosts:
+            s = socket.socket()
+            addr,port = gmeta.split(':')
+            try:
+                s.connect((addr,int(port)))
+                xmldata = s.recv(self.readbytes)
+                break
+            except:
+                # print log here when logging added
+                pass
         # clear counters and defaults
         self.buffer = []
         self.n_parsed_metrics = 0
@@ -135,37 +145,39 @@ class gmeta_processor:
         self.cur_grid = 'unspecified'
         self.cur_cluster = 'unspecified'
         self.check_time = time.time()
-        while d != '':
+        while xmldata != '':
             try:
-                p.Parse(d)
+                p.Parse(xmldata)
             except:
                 print 'got error (%d: %s) parsing XML at %d' %(
                     p.ErrorCode,
                     xml.parsers.expat.ErrorString(p.ErrorCode),
                     p.ErrorByteIndex,
                 )
-                print 'error string -----',d[p.ErrorByteIndex],'-----'
-                print d[p.ErrorByteIndex-10:p.ErrorByteIndex+10]
+                print 'error string -----',xmldata[p.ErrorByteIndex],'-----'
+                print xmldata[p.ErrorByteIndex-10:p.ErrorByteIndex+10]
                 sys.exit()
-                
+
             if len(self.buffer) >= self.batch:
                 print 'going to send batch of size %d to es' %(len(self.buffer))
                 self.elastic_index()
                 self.buffer = []
 
-            d = s.recv(self.readbytes)
+            xmldata = s.recv(self.readbytes)
 
         print 'going to send batch of size %d to es' %(len(self.buffer))
         self.elastic_index()
         self.buffer = []
-        
+
 
     def run (self):
         while True:
+            start_time = time.time()
             self.parse_metrics()
             print 'parsed %d metrics from %d hosts' %(self.n_parsed_metrics,self.n_parsed_hosts)
-            print 'sleeping %d seconds' %self.interval
-            time.sleep(self.interval)
+            sleep_time = time.time()-start_time+self.interval
+            print 'sleeping %d seconds' %(sleep_time)
+            time.sleep(sleep_time)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
