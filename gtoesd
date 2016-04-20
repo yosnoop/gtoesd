@@ -175,7 +175,7 @@ class gmeta_processor:
             start_time = time.time()
             self.parse_metrics()
             print 'parsed %d metrics from %d hosts' %(self.n_parsed_metrics,self.n_parsed_hosts)
-            sleep_time = time.time()-start_time+self.interval
+            sleep_time = self.interval-(time.time()-start_time)
             print 'sleeping %d seconds' %(sleep_time)
             time.sleep(sleep_time)
 
