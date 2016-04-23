@@ -123,9 +123,6 @@ class gmeta_processor:
         if self.debug:
             print 'debug mode: would index %d to index %s' %(
                 len(self.buffer)/2,self.indexname)
-            f=open('indexout.json','w')
-            f.write('\n'.join(self.buffer))
-            f.close()
             return
         bulk = '\n'.join(self.buffer)
         s = socket.socket()
