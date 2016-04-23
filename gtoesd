@@ -61,7 +61,10 @@ class gmeta_processor:
             #
             if tn > self.interval:
                 return
-            time_metric = time.strftime("%Y-%m-%dT%H:%M:%S",time.localtime(time_metric))
+            metric_localtime = time.localtime(time_metric)
+            time_metric = time.strftime(
+                "%Y-%m-%dT%H:%M:%S", metric_localtime
+            )
             time_metric += self.tz
             val = attrs['VAL']
             if attrs['TYPE'] == 'float' or attrs['TYPE'] == 'double':
@@ -83,7 +86,19 @@ class gmeta_processor:
                 'cluster': self.cur_cluster,
                 'grid': self.cur_grid,
             }
-            self.buffer.append('{ "index": {} }')
+            #
+            # Override the index if needed. Dont send each time to
+            # conserve on bytes
+            #
+            indexname = time.strftime(
+                'ganglia-%Y.%m.%d', metric_localtime
+            )
+            if indexname == self.indexname:
+                self.buffer.append('{"index":{}}')
+            else:
+                self.buffer.append(
+                    '{"index":{"_index":"%s"}}' %(indexname)
+                )
             self.buffer.append(json.dumps(out))
 
     def e_el (self, name):
@@ -96,15 +111,18 @@ class gmeta_processor:
             self.cur_host = None
 
     def elastic_index (self):
-        indexname = time.strftime('ganglia-%Y.%m.%d')
         if self.debug:
-            print 'debug mode: would index %d to index %s' %(len(self.buffer)/2,indexname)
+            print 'debug mode: would index %d to index %s' %(
+                len(self.buffer)/2,self.indexname)
+            f=open('indexout.json','w')
+            f.write('\n'.join(self.buffer))
+            f.close()
             return
         bulk = '\n'.join(self.buffer)
         s = socket.socket()
         addr,port = self.elastic_hosts[0].split(':')
         s.connect((addr,int(port)))
-        hdr = 'POST /ganglia/gmon/_bulk HTTP/1.1\n' +\
+        hdr = 'POST /%s/gmon/_bulk HTTP/1.1\n' %(self.indexname) +\
               'Content-Type: text/json\n' +\
               'Content-Length: %d\n\n' %(len(bulk))
         s.send(hdr+bulk)
@@ -145,6 +163,8 @@ class gmeta_processor:
         self.cur_grid = 'unspecified'
         self.cur_cluster = 'unspecified'
         self.check_time = time.time()
+        # set the presumed index name (overidden if needed)
+        self.indexname = time.strftime('ganglia-%Y.%m.%d')
         while xmldata != '':
             try:
                 p.Parse(xmldata)
@@ -176,7 +196,7 @@ class gmeta_processor:
             self.parse_metrics()
             print 'parsed %d metrics from %d hosts' %(self.n_parsed_metrics,self.n_parsed_hosts)
             sleep_time = self.interval-(time.time()-start_time)
-            print 'sleeping %d seconds' %(sleep_time)
+            print 'sleeping %f seconds' %(sleep_time)
             time.sleep(sleep_time)
 
 if __name__ == '__main__':
