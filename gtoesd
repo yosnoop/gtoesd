@@ -7,6 +7,7 @@ import json
 import time
 import sys
 import zlib
+import httplib
 
 class gmeta_processor:
     #
@@ -42,6 +43,11 @@ class gmeta_processor:
         self.buffer = []
         self.n_parsed_metrics = 0
         self.n_parsed_hosts = 0
+        #
+        # Start elasticsearch keepalive connection if not debug mode
+        #
+        if not debug:
+            self.elastic_connect()
 
     def s_el (self, name, attrs):
         #
@@ -119,25 +125,68 @@ class gmeta_processor:
         if name == 'HOST':
             self.cur_host = None
 
+    def elastic_connect (self):
+        #
+        # Try connecting to one of any specified elasticsearch nodes
+        # in order and return 1 if successful or 0 if failed. The
+        # connection is stored and used in the elastic_index function.
+        #
+        for e in self.elastic_hosts:
+            addr,port = e.split(':')
+            self.elasticconn = httplib.HTTPConnection(addr,int(port))
+            try:
+                self.elasticconn.connect()
+                return 1
+            except:
+                print 'failed to connect es host %s:%s' %(addr,port)
+        return 0
+
     def elastic_index (self):
+        #
+        # Index whatever is in the buffer at present. Attempt a
+        # reconnect to elasticsearch and inspect the output for errors
+        # if required and configured
+        #
         if self.debug:
             print 'debug mode: would index %d to index %s' %(
                 len(self.buffer)/2,self.indexname)
             return
         bulk = '\n'.join(self.buffer)
-        s = socket.socket()
-        addr,port = self.elastic_hosts[0].split(':')
-        s.connect((addr,int(port)))
-        hdr = 'POST /%s/gmon/_bulk HTTP/1.1\n' %(self.indexname) +\
-              'Content-Type: text/json\n' +\
-              'Content-Length: %d\n\n' %(len(bulk))
-        s.send(hdr+bulk)
-        r = s.recv(256)
-        print 'got back from elasticsearch:'
-        print r
-        if r.split('\n')[0].split(' ')[1] == '200':
-            print 'ok status'
-        s.close()
+        req = '/%s/gmon/_bulk' %(self.indexname)
+        hdr = { "Content-Type":"text/json" }
+        #
+        # Try sending the request to elasticsearch on current
+        # connection. This may fail if elastic goes down or otherwise
+        # closes the connection. Retry connection on all supplied
+        # servers and reissue request if possible, otherwise we have
+        # no choice but to give up
+        #
+        try:
+            self.elasticconn.request('POST', req, bulk, hdr)
+        except socket.error:
+            if self.elastic_connect():
+                self.elasticconn.request('POST', req, bulk, hdr)
+            else:
+                print 'could not connect to any es endpoints'
+                return
+
+        res = self.elasticconn.getresponse()
+        if res.status == 200:
+            rdata = json.loads(res.read())
+            if rdata['errors']:
+                print 'errors detected in es response'
+                #
+                # possibly inspect errors in indexing. We should
+                # probably only do this if some debug level logging is
+                # requested, otherwise just continue
+                #
+                c = 0
+                for i in rdata['items']:
+                    if i['create']['status'] != 201:
+                        print self.buffer[c*2+1]
+                    c+=1
+        else:
+            print 'indexing failure: %d %s' %(res.status, res.reason)
 
     def parse_metrics (self):
         #
@@ -194,14 +243,14 @@ class gmeta_processor:
                 sys.exit()
 
             if len(self.buffer) >= self.batch:
-                print 'going to send batch of size %d to es' %(len(self.buffer))
+                print 'going to send batch of size %d to es' %(len(self.buffer)/2)
                 self.elastic_index()
                 self.buffer = []
 
             xmldata = s.recv(self.readbytes)
 
         s.close()
-        print 'going to send batch of size %d to es' %(len(self.buffer))
+        print 'going to send batch of size %d to es' %(len(self.buffer)/2)
         self.elastic_index()
         self.buffer = []
 
