@@ -6,6 +6,7 @@ import socket
 import json
 import time
 import sys
+import zlib
 
 class gmeta_processor:
     #
@@ -173,9 +174,17 @@ class gmeta_processor:
         self.check_time = time.time()
         # set the presumed index name (overidden if needed)
         self.indexname = time.strftime(self.basename+'-%Y.%m.%d')
+        # check for zipped data, use zlib autdetection MAX_WBITS|32
+        zipped = False
+        if xmldata[0:5] != '<?xml':
+            zipped = True
+            decomp = zlib.decompressobj(zlib.MAX_WBITS|32)
         while xmldata != '':
             try:
-                p.Parse(xmldata)
+                if zipped:
+                    p.Parse(decomp.decompress(xmldata))
+                else:
+                    p.Parse(xmldata)
             except:
                 print 'got error (%d: %s) parsing XML at %d' %(
                     p.ErrorCode,
