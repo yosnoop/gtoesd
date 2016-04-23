@@ -81,11 +81,6 @@ class gmeta_processor:
                 "%Y-%m-%dT%H:%M:%S", metric_localtime
             )
             time_metric += self.tz
-            val = attrs['VAL']
-            if attrs['TYPE'] == 'float' or attrs['TYPE'] == 'double':
-                val = float(val)
-            elif attrs['TYPE'] != 'string':
-                val = int(val)
             units = attrs['UNITS']
             if units.strip() == "":
                 units = "-"
@@ -94,13 +89,19 @@ class gmeta_processor:
             #
             out = {
                 'name': attrs['NAME'],
-                'val':  val,
                 'units': units,
                 '@timestamp': time_metric,
                 'host': self.cur_host,
                 'cluster': self.cur_cluster,
                 'grid': self.cur_grid,
             }
+            val = attrs['VAL']
+            if attrs['TYPE'] == 'float' or attrs['TYPE'] == 'double':
+                out['val'] = float(val)
+            elif attrs['TYPE'] != 'string':
+                out['val'] = int(val)
+            else:
+                out['stringval'] = val
             #
             # Override the index if needed. Dont send each time to
             # conserve on bytes
