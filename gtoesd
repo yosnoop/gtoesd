@@ -137,6 +137,7 @@ class gmeta_processor:
         print r
         if r.split('\n')[0].split(' ')[1] == '200':
             print 'ok status'
+        s.close()
 
     def parse_metrics (self):
         #
@@ -199,6 +200,7 @@ class gmeta_processor:
 
             xmldata = s.recv(self.readbytes)
 
+        s.close()
         print 'going to send batch of size %d to es' %(len(self.buffer))
         self.elastic_index()
         self.buffer = []
