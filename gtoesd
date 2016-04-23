@@ -14,8 +14,15 @@ class gmeta_processor:
     # process collecting stats at a regular interval and pushing to
     # ES.
     #
-    def __init__ (self, gmeta_hosts, elastic_hosts,
-                  interval=15, batch=10000, debug=False):
+    def __init__ (
+            self,
+            gmeta_hosts,
+            elastic_hosts,
+            interval = 15,
+            batch    = 10000,
+            debug    = False,
+            basename = 'ganglia',
+    ):
         self.debug = debug
         self.gmeta_hosts = gmeta_hosts
         self.elastic_hosts = elastic_hosts
@@ -26,6 +33,7 @@ class gmeta_processor:
         self.cur_cluster = 'unspecified'
         self.time_reported = 0
         self.readbytes = 8192
+        self.basename = basename
         #
         # The localtime function does not give proper tz info
         #
@@ -91,7 +99,7 @@ class gmeta_processor:
             # conserve on bytes
             #
             indexname = time.strftime(
-                'ganglia-%Y.%m.%d', metric_localtime
+                self.basename+'-%Y.%m.%d', metric_localtime
             )
             if indexname == self.indexname:
                 self.buffer.append('{"index":{}}')
@@ -164,7 +172,7 @@ class gmeta_processor:
         self.cur_cluster = 'unspecified'
         self.check_time = time.time()
         # set the presumed index name (overidden if needed)
-        self.indexname = time.strftime('ganglia-%Y.%m.%d')
+        self.indexname = time.strftime(self.basename+'-%Y.%m.%d')
         while xmldata != '':
             try:
                 p.Parse(xmldata)
@@ -222,6 +230,11 @@ if __name__ == '__main__':
         help='Do not index, just show what would happen',
         action='store_true',
     )
+    parser.add_argument(
+        '-b','--basename',
+        help='base name of index e.g. {basename}-YYYY.mm.dd',
+        type=str,default='ganglia',
+    )
 
     p = parser.parse_args()
 
@@ -234,6 +247,7 @@ if __name__ == '__main__':
         p.ganglia,
         p.elastic,
         interval=p.interval,
-        debug=p.noindex
+        debug=p.noindex,
+        basename=p.basename,
     )
     g.run()
