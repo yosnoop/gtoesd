@@ -24,6 +24,7 @@ class gmeta_processor:
             batch    = 10000,
             debug    = False,
             basename = 'ganglia',
+            utctime  = True,
     ):
         self.debug = debug
         self.gmeta_hosts = gmeta_hosts
@@ -39,7 +40,11 @@ class gmeta_processor:
         #
         # The localtime function does not give proper tz info
         #
-        self.tz = time.strftime('%z')
+        self.utctime = utctime
+        if utctime:
+            self.tz = '+0000'
+        else:
+            self.tz = time.strftime('%z')
         self.buffer = []
         self.n_parsed_metrics = 0
         self.n_parsed_hosts = 0
@@ -67,7 +72,7 @@ class gmeta_processor:
         if name == 'METRIC' and self.cur_host:
             self.n_parsed_metrics += 1
             tn = int(attrs['TN'])
-            time_metric = self.time_reported - tn
+            time_metric = self.check_time - tn
             #
             # Metrics reported less than interval time ago should be
             # pushed to the system. Maybe we also need to check that
@@ -76,9 +81,13 @@ class gmeta_processor:
             #
             if tn > self.interval:
                 return
-            metric_localtime = time.localtime(time_metric)
+            if self.utctime:
+                metric_reftime = time.gmtime(time_metric)
+            else:
+                metric_reftime = time.localtime(time_metric)
+
             time_metric = time.strftime(
-                "%Y-%m-%dT%H:%M:%S", metric_localtime
+                "%Y-%m-%dT%H:%M:%S", metric_reftime
             )
             time_metric += self.tz
             units = attrs['UNITS']
@@ -107,7 +116,7 @@ class gmeta_processor:
             # conserve on bytes
             #
             indexname = time.strftime(
-                self.basename+'-%Y.%m.%d', metric_localtime
+                self.basename+'-%Y.%m.%d', metric_reftime
             )
             if indexname == self.indexname:
                 self.buffer.append('{"index":{}}')
@@ -184,6 +193,7 @@ class gmeta_processor:
                 c = 0
                 for i in rdata['items']:
                     if i['create']['status'] != 201:
+                        print i
                         print self.buffer[c*2+1]
                     c+=1
         else:
@@ -293,6 +303,11 @@ if __name__ == '__main__':
         help='base name of index e.g. {basename}-YYYY.mm.dd',
         type=str,default='ganglia',
     )
+    parser.add_argument(
+        '--localtime',
+        help='use localtime instead of UTC for index and events',
+        action='store_true',
+    )
 
     p = parser.parse_args()
 
@@ -307,5 +322,6 @@ if __name__ == '__main__':
         interval=p.interval,
         debug=p.noindex,
         basename=p.basename,
+        utctime=not p.localtime,
     )
     g.run()
