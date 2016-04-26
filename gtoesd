@@ -161,6 +161,12 @@ class gmeta_processor:
             print 'debug mode: would index %d to index %s' %(
                 len(self.buffer)/2,self.indexname)
             return
+        #
+        # Skip if we have nothing to index
+        #
+        if len(self.buffer) == 0:
+            return
+
         bulk = '\n'.join(self.buffer)
         req = '/%s/gmon/_bulk' %(self.indexname)
         hdr = { "Content-Type":"text/json" }
@@ -180,9 +186,28 @@ class gmeta_processor:
                 print 'could not connect to any es endpoints'
                 return
 
-        res = self.elasticconn.getresponse()
-        if res.status == 200:
+        #
+        # Attempt to get the response from server, if this fails we
+        # are probably in a bad state so clean up connection and, and
+        # skip this one (we quite possibly sent already)
+        #
+        try:
+            res = self.elasticconn.getresponse()
+        except:
+            print 'caught exception in http response:',sys.exc_info()
+            self.elasticconn.close()
+            self.elastic_connect()
+            return
+        #
+        # We have to read the response here for reusing the
+        # connection, for non OK statuses as well
+        #
+        try:
             rdata = json.loads(res.read())
+        except:
+            return
+
+        if res.status == 200:
             if rdata['errors']:
                 print 'errors detected in es response'
                 #
@@ -272,6 +297,8 @@ class gmeta_processor:
             self.parse_metrics()
             print 'parsed %d metrics from %d hosts' %(self.n_parsed_metrics,self.n_parsed_hosts)
             sleep_time = self.interval-(time.time()-start_time)
+            if sleep_time < 0:
+                sleep_time = 0
             print 'sleeping %f seconds' %(sleep_time)
             time.sleep(sleep_time)
 
