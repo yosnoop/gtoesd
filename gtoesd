@@ -348,6 +348,16 @@ if __name__ == '__main__':
         help='use localtime instead of UTC for index and events',
         action='store_true',
     )
+    parser.add_argument(
+        '-v','--verbose',
+        help='increase verbosity, -vv for debug logs',
+        action='count',default=0,
+    )
+    parser.add_argument(
+        '-c','--console',
+        help='log to console instead of syslog',
+        action='store_true',
+    )
 
     p = parser.parse_args()
 
@@ -357,7 +367,16 @@ if __name__ == '__main__':
     rootlog = logging.getLogger()
     syslog  = logging.handlers.SysLogHandler('/dev/log')
     syslog.setFormatter(logging.Formatter('gtoesd: %(message)s'))
-    rootlog.addHandler(syslog)
+    #
+    # Set the verbosity, starting at default of warning, we should
+    # subtract 10 to get to next level for each -v option
+    #
+    rootlog.setLevel(logging.WARNING-10*p.verbose)
+    if p.console:
+        rootlog.addHandler(logging.StreamHandler())
+    else:
+        rootlog.addHandler(syslog)
+    logging.debug('initialized logging interface')
 
     if not p.ganglia:
         p.ganglia = ['localhost:8651']
