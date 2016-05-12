@@ -155,6 +155,16 @@ class gmeta_processor:
         logging.error('failed to connect to any es host')
         return 0
 
+    def ganglia_rotate (self):
+        #
+        # put current server (front of list) at the end. Useful to
+        # de-prioritize hosts that fail connection or give bad XML
+        #
+        self.gmeta_hosts.append(self.gmeta_hosts.pop(0))
+        logging.debug('rotated ganglia hosts, next try to %s' %(
+            self.gmeta_hosts[0]
+        ))
+
     def elastic_index (self):
         #
         # Index whatever is in the buffer at present. Attempt a
@@ -247,16 +257,18 @@ class gmeta_processor:
         # connect to ganglia. Try servers listed in turn for a server
         # which we can connect to
         #
-        for gmeta in self.gmeta_hosts:
+        for i in xrange(len(self.gmeta_hosts)):
             s = socket.socket()
-            addr,port = gmeta.split(':')
+            addr,port = self.gmeta_hosts[0].split(':')
             try:
                 s.connect((addr,int(port)))
                 xmldata = s.recv(self.readbytes)
                 break
             except:
+                self.ganglia_rotate()
                 logging.error('Could not ganglia source %s:%s' %(addr,port))
                 pass
+
         #
         # check if we never connected, then skip the rest of this run if so
         #
@@ -285,11 +297,24 @@ class gmeta_processor:
                 else:
                     p.Parse(xmldata)
             except:
-                logging.error('Error %d parsing XML: %s at %d' %(
+                logging.error('Error %d parsing XML from %s: %s at %d' %(
                     p.ErrorCode,
+                    self.gmeta_hosts[0],
                     xml.parsers.expat.ErrorString(p.ErrorCode),
                     p.ErrorByteIndex,
                 ))
+                #
+                # If there is corrupt XML, may be some issue with this
+                # gmond, try connections from the other host if
+                # specified
+                #
+                logging.debug('rotating ganglia hosts due to XML error')
+                self.ganglia_rotate()
+                #
+                # And we will not be able to process any more from
+                # here, so stop with this run.
+                #
+                break
 
             if len(self.buffer) >= self.batch:
                 self.elastic_index()
