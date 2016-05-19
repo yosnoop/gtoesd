@@ -10,6 +10,8 @@ import zlib
 import httplib
 import logging
 import logging.handlers
+import random
+import os
 
 class gmeta_processor:
     #
@@ -22,11 +24,12 @@ class gmeta_processor:
             self,
             gmeta_hosts,
             elastic_hosts,
-            interval = 15,
-            batch    = 10000,
-            debug    = False,
-            basename = 'ganglia',
-            utctime  = True,
+            interval  = 15,
+            batch     = 10000,
+            debug     = False,
+            basename  = 'ganglia',
+            utctime   = True,
+            slavemode = False,
     ):
         self.debug = debug
         self.gmeta_hosts = gmeta_hosts
@@ -39,6 +42,10 @@ class gmeta_processor:
         self.time_reported = 0
         self.readbytes = 8192
         self.basename = basename
+        self.index_count = 0
+        self.slave = False
+        if slavemode:
+            self.slave = True
         #
         # The localtime function does not give proper tz info
         #
@@ -55,6 +62,17 @@ class gmeta_processor:
         #
         if not debug:
             self.elastic_connect()
+
+    def make_index_name (self, reftime = None):
+        if reftime:
+            ref = reftime
+        else:
+            if self.utctime:
+                ref = time.gmtime()
+            else:
+                ref = time.localtime()
+
+        return time.strftime(self.basename+'-%Y.%m.%d', ref)
 
     def s_el (self, name, attrs):
         #
@@ -117,9 +135,8 @@ class gmeta_processor:
             # Override the index if needed. Dont send each time to
             # conserve on bytes
             #
-            indexname = time.strftime(
-                self.basename+'-%Y.%m.%d', metric_reftime
-            )
+            indexname = self.make_index_name(metric_reftime)
+
             if indexname == self.indexname:
                 self.buffer.append('{"index":{}}')
             else:
@@ -165,6 +182,30 @@ class gmeta_processor:
             self.gmeta_hosts[0]
         ))
 
+    def elastic_request (self, req, data = None):
+        hdr = { "Content-Type":"text/json" }
+
+        meth = 'GET'
+        if data:
+            meth = 'POST'
+
+        logging.debug ('sending %s request to elastic endpoint %s' %(meth,req))
+
+        try:
+            self.elasticconn.request(meth, req, data, hdr)
+        except:
+            logging.debug ('request to elasticsearch failed')
+            if self.elastic_connect():
+                try:
+                    self.elasticconn.request(meth, req, data, hdr)
+                except:
+                    logging.debug ('second request to elasticsearch failed')
+                    return 0
+            else:
+                logging.debug ('failed to make elasticsearch connection')
+                return 0
+        return 1
+
     def elastic_index (self):
         #
         # Index whatever is in the buffer at present. Attempt a
@@ -177,16 +218,15 @@ class gmeta_processor:
 
         if self.debug:
             logging.debug('indexing disabled')
-            return
+            return 1
         #
         # Skip if we have nothing to index
         #
         if len(self.buffer) == 0:
-            return
+            return 1
 
         bulk = '\n'.join(self.buffer)
         req = '/%s/gmon/_bulk' %(self.indexname)
-        hdr = { "Content-Type":"text/json" }
         #
         # Try sending the request to elasticsearch on current
         # connection. This may fail if elastic goes down or otherwise
@@ -194,14 +234,8 @@ class gmeta_processor:
         # servers and reissue request if possible, otherwise we have
         # no choice but to give up
         #
-        try:
-            self.elasticconn.request('POST', req, bulk, hdr)
-        except socket.error:
-            if self.elastic_connect():
-                self.elasticconn.request('POST', req, bulk, hdr)
-            else:
-                return
-
+        if not self.elastic_request (req, bulk):
+            return 0
         #
         # Attempt to get the response from server, if this fails we
         # are probably in a bad state so clean up connection and, and
@@ -213,7 +247,7 @@ class gmeta_processor:
             logging.error('Got exception in es http response:',sys.exc_info())
             self.elasticconn.close()
             self.elastic_connect()
-            return
+            return 0
         #
         # We have to read the response here for reusing the
         # connection, for non OK statuses as well
@@ -221,7 +255,7 @@ class gmeta_processor:
         try:
             rdata = json.loads(res.read())
         except:
-            return
+            return 0
 
         if res.status == 200:
             if rdata['errors']:
@@ -242,6 +276,8 @@ class gmeta_processor:
             logging.error('Got bad return from es: %d %s' %(
                 res.status, res.reason
             ))
+            return 0
+        return 1
 
     def parse_metrics (self):
         #
@@ -270,9 +306,12 @@ class gmeta_processor:
                 pass
 
         #
-        # check if we never connected, then skip the rest of this run if so
+        # check if we never connected, then skip the rest of this run
+        # if so. If in slave mode, we must stop here because others
+        # will detect lack of records and start competing for master
         #
         if xmldata == '':
+            self.slave = True
             logging.error('Failed to connect to any ganglia source')
             return
 
@@ -284,7 +323,8 @@ class gmeta_processor:
         self.cur_cluster = 'unspecified'
         self.check_time = time.time()
         # set the presumed index name (overidden if needed)
-        self.indexname = time.strftime(self.basename+'-%Y.%m.%d')
+        self.indexname = self.make_index_name()
+
         # check for zipped data, use zlib autdetection MAX_WBITS|32
         zipped = False
         if xmldata[0:5] != '<?xml':
@@ -317,23 +357,152 @@ class gmeta_processor:
                 break
 
             if len(self.buffer) >= self.batch:
-                self.elastic_index()
+                if self.elastic_index():
+                    self.slave = False
                 self.buffer = []
 
             xmldata = s.recv(self.readbytes)
 
         s.close()
-        self.elastic_index()
+        if self.elastic_index():
+            self.slave = False
         self.buffer = []
 
+    def get_index_count (self):
+        #
+        # Query elasticsearch stats API for the current doc count of
+        # the current index
+        #
+        indexname = self.make_index_name()
+
+        req = '/%s/_stats/docs' %(indexname)
+
+        logging.debug('sending elastic stats request: %s' %(req))
+
+        if not self.elastic_request (req):
+            return -1
+
+        try:
+            res = self.elasticconn.getresponse()
+            res = json.loads(res.read())
+            res = int(res['_all']['primaries']['docs']['count'])
+            logging.debug('elastic stats number of docs: %d' %(res))
+        except:
+            logging.debug('no/bad response from elastic stats request')
+            return -1
+
+        return res
+
+    def index_slave_record (self):
+        #
+        # Insert the slave master vote record into the index, return 1
+        # upon success and 0 otherwise
+        #
+        indexname = self.make_index_name()
+
+        req = '/%s/gtoesd/' %(indexname)
+        dat = '{"host":"%s","@timestamp":"%s"}' %(
+            os.getenv('HOSTNAME'),
+            time.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+
+        self.elastic_request (req, dat)
+
+        try:
+            res = self.elasticconn.getresponse()
+            res = res.read()
+            logging.debug('result of slave record is: %s' %(res))
+            if res.status == 201:
+                return 1
+        except:
+            pass
+        return 0
+
+    def check_slave_status (self):
+        #
+        # Check status of metric indexing. If we are in slave mode, we
+        # need to check to see if there are more items than last
+        # run. If not, we should attempt to become master. Election is
+        # held by having all slaves try to index one item using random
+        # delays. Contention is checked by ensuring only one more
+        # entry than last after a short settling time.
+        #
+        count = self.get_index_count()
+
+        #
+        # If we got bad return from count, we cant do anything
+        #
+        if count == -1:
+            logging.debug ('slave mode: bad stats return')
+            return
+        #
+        # First time? if so skip. Index grew? this means someone else
+        # is master so we don't do anything
+        #
+        if self.index_count == 0 or count - self.index_count > 0:
+            logging.debug ('slave mode: other master detected (%d records)' %(
+                count - self.index_count
+            ))
+            self.index_count = count
+            return
+
+        #
+        # Now we assume there is no-one updating the stats, so we
+        # begin the election. Loop using random sleep intervals until
+        # someone is selected master
+        #
+        logging.debug ('slave mode: no master detected, starting election')
+        self.index_count = count
+
+        #
+        # Each potential slave does a random sleep and then attempts
+        # to put a record into the index if another slave did not
+        # already do so.
+        #
+        while True:
+            time.sleep(random.uniform(0,10))
+            count = self.get_index_count()
+            #
+            # did someone beat us to it? otherwise try to put record
+            #
+            if count - self.index_count > 0:
+                logging.debug ('slave mode: alternate slave wins vote')
+                break
+
+            if not self.index_slave_record():
+                logging.debug ('slave mode: error adding our vote record')
+                break
+            #
+            # Finally for paranoia sake if another slave timing is so
+            # close to ours, give a little time before checking status
+            #
+            time.sleep(0.3)
+            count = self.get_index_count()
+            #
+            # Only if ours is the only record to arrive since starting
+            # election cycle to we become master
+            #
+            if count - self.index_count == 1:
+                logging.debug ('slave mode: transition out of slave mode')
+                self.slave = False
+                break
 
     def run (self):
         while True:
             start_time = time.time()
-            self.parse_metrics()
-            logging.debug('parsed %d metrics from %d hosts' %(
-                self.n_parsed_metrics, self.n_parsed_hosts,
-            ))
+            if self.slave:
+                self.check_slave_status()
+            else:
+                #
+                # Pre-empt slave mode, only when we have successfully
+                # indexed to elasticsearch will we come back out of
+                # slave mode
+                #
+                self.slave = True
+                self.parse_metrics()
+                logging.debug('parsed %d metrics from %d hosts' %(
+                    self.n_parsed_metrics, self.n_parsed_hosts,
+                ))
             sleep_time = self.interval-(time.time()-start_time)
             if sleep_time < 0:
                 sleep_time = 0
@@ -383,6 +552,11 @@ if __name__ == '__main__':
         help='log to console instead of syslog',
         action='store_true',
     )
+    parser.add_argument(
+        '-s','--slave',
+        help='run in slave mode for HA clustering',
+        action='store_true',
+    )
 
     p = parser.parse_args()
 
@@ -415,5 +589,6 @@ if __name__ == '__main__':
         debug=p.noindex,
         basename=p.basename,
         utctime=not p.localtime,
+        slavemode=p.slave,
     )
     g.run()
