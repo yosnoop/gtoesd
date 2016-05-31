@@ -410,8 +410,8 @@ class gmeta_processor:
 
         try:
             res = self.elasticconn.getresponse()
-            res = res.read()
-            logging.debug('result of slave record is: %s' %(res))
+            dat = res.read()
+            logging.debug('slave record add returned %d: %s' %(res.status,dat))
             if res.status == 201:
                 return 1
         except:
@@ -476,7 +476,7 @@ class gmeta_processor:
             # Finally for paranoia sake if another slave timing is so
             # close to ours, give a little time before checking status
             #
-            time.sleep(0.3)
+            time.sleep(1)
             count = self.get_index_count()
             #
             # Only if ours is the only record to arrive since starting
