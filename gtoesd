@@ -46,6 +46,8 @@ class gmeta_processor:
         self.slave = False
         if slavemode:
             self.slave = True
+        self.slave_fail_count = 0
+        self.slave_fail_count_min = 3
         #
         # The localtime function does not give proper tz info
         #
@@ -443,7 +445,20 @@ class gmeta_processor:
             logging.debug ('slave mode: other master detected (%d records)' %(
                 count - self.index_count
             ))
+            self.slave_fail_count = 0
             self.index_count = count
+            return
+
+        #
+        # If we havent reached fail counter, return and increment
+        # counter
+        #
+        if self.slave_fail_count < self.slave_fail_count_min:
+            logging.debug ('slave mode: min fail not met (%d < %d)' %(
+                self.slave_fail_count,
+                self.slave_fail_count_min,
+            ))
+            self.slave_fail_count += 1
             return
 
         #
@@ -467,6 +482,7 @@ class gmeta_processor:
             #
             if count - self.index_count > 0:
                 logging.debug ('slave mode: alternate slave wins vote')
+                self.slave_fail_count = 0
                 break
 
             if not self.index_slave_record():
@@ -484,6 +500,7 @@ class gmeta_processor:
             #
             if count - self.index_count == 1:
                 logging.debug ('slave mode: transition out of slave mode')
+                self.slave_fail_count = 0
                 self.slave = False
                 break
 
