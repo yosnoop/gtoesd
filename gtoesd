@@ -441,7 +441,7 @@ class gmeta_processor:
         # First time? if so skip. Index grew? this means someone else
         # is master so we don't do anything
         #
-        if self.index_count == 0 or count - self.index_count > 0:
+        if self.index_count == 0 or count - self.index_count != 0:
             logging.debug ('slave mode: other master detected (%d records)' %(
                 count - self.index_count
             ))
