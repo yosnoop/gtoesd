@@ -386,14 +386,20 @@ class gmeta_processor:
 
         try:
             res = self.elasticconn.getresponse()
-            res = json.loads(res.read())
-            res = int(res['_all']['primaries']['docs']['count'])
-            logging.debug('elastic stats number of docs: %d' %(res))
+            dat = json.loads(res.read())
+            #
+            # If the index is not found, fudge the result to 1, so
+            # that slave logic sees no update if this state repeats
+            #
+            if res.status == 404:
+                return 1
+            dat = int(dat['_all']['primaries']['docs']['count'])
+            logging.debug('elastic stats number of docs: %d' %(dat))
         except:
             logging.debug('no/bad response from elastic stats request')
             return -1
 
-        return res
+        return dat
 
     def index_slave_record (self):
         #
@@ -415,6 +421,15 @@ class gmeta_processor:
             dat = res.read()
             logging.debug('slave record add returned %d: %s' %(res.status,dat))
             if res.status == 201:
+                #
+                # Force a refresh of the index so we can be sure to
+                # get results
+                #
+                req = '/%s/_refresh' %(indexname)
+                self.elastic_request (req)
+                res = self.elasticconn.getresponse()
+                dat = res.read()
+                logging.debug('refresh index returned status %d' %(res.status))
                 return 1
         except:
             pass
@@ -475,7 +490,9 @@ class gmeta_processor:
         # already do so.
         #
         while True:
-            time.sleep(random.uniform(0,10))
+            sleep_time = random.uniform(0,20)
+            logging.debug ('slave mode: backing off %0.2f seconds' %(sleep_time))
+            time.sleep(sleep_time)
             count = self.get_index_count()
             #
             # did someone beat us to it? otherwise try to put record
