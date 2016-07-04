@@ -127,12 +127,13 @@ class gmeta_processor:
                 'grid': self.cur_grid,
             }
             val = attrs['VAL']
-            if attrs['TYPE'] == 'float' or attrs['TYPE'] == 'double':
-                out['val'] = float(val)
-            elif attrs['TYPE'] != 'string':
-                out['val'] = int(val)
-            else:
+            if attrs['TYPE'] == 'string':
                 out['stringval'] = val
+            else:
+                try:
+                    out['val'] = float(val)
+                except:
+                    out['stringval'] = val
             #
             # Override the index if needed. Dont send each time to
             # conserve on bytes
@@ -297,6 +298,7 @@ class gmeta_processor:
         #
         for i in xrange(len(self.gmeta_hosts)):
             s = socket.socket()
+            s.settimeout(10.0)
             addr,port = self.gmeta_hosts[0].split(':')
             try:
                 s.connect((addr,int(port)))
