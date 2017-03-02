@@ -270,11 +270,12 @@ class gmeta_processor:
                 #
                 c = 0
                 for i in rdata['items']:
-                    if i['create']['status'] != 201:
-                        logging.debug('index error source: %s, message: %s' %(
-                            self.buffer[c*2+1],i
-                        ))
-                    c+=1
+                    if 'create' in i:
+                        if i['create']['status'] != 201:
+                            logging.debug('index error source: %s, message: %s' %(
+                                self.buffer[c*2+1],i
+                            ))
+                        c+=1
         else:
             logging.error('Got bad return from es: %d %s' %(
                 res.status, res.reason
